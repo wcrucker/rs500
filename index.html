@@ -381,7 +381,7 @@ main{position:relative; z-index:1; padding:8px 0 100px;}
 
 /* scoreboard */
 .scoreboard{
-  display:grid; grid-template-columns:repeat(3,1fr);
+  display:grid; grid-template-columns:repeat(2,1fr);
   gap:1px; background:var(--paper-line);
   border:1px solid var(--paper-line);
   border-radius:3px; overflow:hidden;
@@ -394,7 +394,6 @@ main{position:relative; z-index:1; padding:8px 0 100px;}
 }
 .score-cell .val{font-family:var(--font-display); font-weight:600; font-size:26px;}
 .score-cell .val small{font-size:13px; color:var(--dust-dim); font-family:var(--font-mono); font-weight:400;}
-.score-cell.rs .val{color:var(--dust);}
 .score-cell.will .val{color:#9db4d6;}
 .score-cell.mason .val{color:#d69d9d;}
 
@@ -528,10 +527,10 @@ footer{
           <input id="searchInput" type="text" placeholder="Search artist or album…">
         </div>
         <select class="sortsel" id="sortSelect">
+          <option value="rs" selected>Sort: RS Order (1–500)</option>
+          <option value="will">Sort: Will's Highest Rated</option>
+          <option value="mason">Sort: Mason's Highest Rated</option>
           <option value="genre">Sort: Genre</option>
-          <option value="rs">Sort: RS Rank</option>
-          <option value="will">Sort: Will's Rank</option>
-          <option value="mason">Sort: Mason's Rank</option>
           <option value="year-desc">Sort: Year (newest)</option>
           <option value="year-asc">Sort: Year (oldest)</option>
           <option value="artist">Sort: Artist A–Z</option>
@@ -548,10 +547,6 @@ footer{
   <div id="content"></div>
   <div id="statsView" style="display:none;"></div>
 </main>
-
-<footer>
-  Rolling Stone's 500 Greatest Albums — ranked, re-ranked, and argued about by Will &amp; Mason. Edits save to your browser only.
-</footer>
 
 <div class="scrim" id="scrim"></div>
 <div class="drawer" id="drawer">
@@ -600,7 +595,7 @@ function attachLazyCover(imgEl, fallbackEl, album){
 // ===== State =====
 let state = {
   search: '',
-  sort: 'genre',
+  sort: 'rs',
   genre: 'All',
   ownOnly: false,
 };
@@ -667,7 +662,6 @@ function cardHTML(a){
       <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
       <div class="album">${escapeHtml(titleCase(a.album))}</div>
       <div class="scoreline">
-        <span class="lbl">RS</span><b>${a.rsRank}</b>
         <span class="lbl">W</span><b>${fmtScore(a.will.score)}</b>
         <span class="lbl">M</span><b>${fmtScore(a.mason.score)}</b>
       </div>
@@ -715,7 +709,11 @@ function render(){
     });
   } else {
     const sorted = sortList(filtered);
-    const label = state.genre !== 'All' ? state.genre : 'Results';
+    const sortLabels = {
+      rs: 'Rolling Stone Order', will: "Sorted by Will's Rating", mason: "Sorted by Mason's Rating",
+      'year-desc': 'Sorted by Year (Newest)', 'year-asc': 'Sorted by Year (Oldest)', artist: 'Sorted A–Z'
+    };
+    const label = state.genre !== 'All' ? state.genre : (sortLabels[state.sort] || 'Results');
     html += `<div class="section-head"><span class="swatch" style="background:${genreColor(state.genre==='All'?'Unknown':state.genre)}"></span><h2>${label}</h2><span class="n">${sorted.length} album${sorted.length!==1?'s':''}</span></div>`;
     html += `<div class="grid">${sorted.map(cardHTML).join('')}</div>`;
   }
@@ -770,7 +768,6 @@ function renderDrawer(a){
     </div>
 
     <div class="scoreboard">
-      <div class="score-cell rs"><div class="who">RS Rank</div><div class="val">#${a.rsRank}</div></div>
       <div class="score-cell will"><div class="who">Will</div><div class="val">${fmtScore(a.will.score)}<small>/10</small></div></div>
       <div class="score-cell mason"><div class="who">Mason</div><div class="val">${fmtScore(a.mason.score)}<small>/10</small></div></div>
     </div>
@@ -871,10 +868,52 @@ function computeStats(){
     .sort((a,b) => b.diff - a.diff)
     .slice(0, 10);
 
+  // biggest agreements (smallest gap)
+  const agreements = withBoth
+    .map(a => ({...a, diff: Math.abs(a.will.score - a.mason.score)}))
+    .sort((a,b) => a.diff - b.diff)
+    .slice(0, 10);
+
+  // top rated by each
+  const topWill = albums.filter(a => typeof a.will.score === 'number').slice().sort((a,b) => b.will.score - a.will.score).slice(0, 10);
+  const topMason = albums.filter(a => typeof a.mason.score === 'number').slice().sort((a,b) => b.mason.score - a.mason.score).slice(0, 10);
+
+  // head-to-head: who rates higher, how often
+  let willHigherCount = 0, masonHigherCount = 0, tiedCount = 0;
+  withBoth.forEach(a => {
+    if (a.will.score > a.mason.score) willHigherCount++;
+    else if (a.mason.score > a.will.score) masonHigherCount++;
+    else tiedCount++;
+  });
+
+  // standard deviation (consistency / how harsh-vs-generous the spread is)
+  function stdDev(arr, mean){
+    const variance = arr.reduce((sum,v) => sum + (v-mean)**2, 0) / arr.length;
+    return Math.sqrt(variance);
+  }
+  const willStdDev = stdDev(willScores, avgWill);
+  const masonStdDev = stdDev(masonScores, avgMason);
+
+  // score distribution buckets (0-1, 1-2, ... 9-10)
+  const buckets = Array.from({length:10}, (_,i) => i);
+  const willDist = buckets.map(b => willScores.filter(v => v >= b && (b===9 ? v<=10 : v<b+1)).length);
+  const masonDist = buckets.map(b => masonScores.filter(v => v >= b && (b===9 ? v<=10 : v<b+1)).length);
+
+  // owned vs not-owned average score (using Will's score, since ownership tracks his collection)
+  const ownedScores = albums.filter(a => a.own && typeof a.will.score === 'number').map(a => a.will.score);
+  const notOwnedScores = albums.filter(a => !a.own && typeof a.will.score === 'number').map(a => a.will.score);
+  const avgOwnedScore = ownedScores.length ? ownedScores.reduce((a,b)=>a+b,0)/ownedScores.length : 0;
+  const avgNotOwnedScore = notOwnedScores.length ? notOwnedScores.reduce((a,b)=>a+b,0)/notOwnedScores.length : 0;
+
   return {
     withBoth, avgWill, avgMason, ownedCount,
     willMasonCorr, willRsCorr, masonRsCorr,
-    genreAgg, genresSorted, decadeAgg, decadesSorted, disagreements
+    genreAgg, genresSorted, decadeAgg, decadesSorted, disagreements,
+    agreements, topWill, topMason,
+    willHigherCount, masonHigherCount, tiedCount,
+    willStdDev, masonStdDev,
+    buckets, willDist, masonDist,
+    avgOwnedScore, avgNotOwnedScore, ownedScores, notOwnedScores
   };
 }
 
@@ -1006,6 +1045,10 @@ function renderStatsView(){
       <div class="stat-card"><div class="label">Will's Avg Score</div><div class="value">${s.avgWill.toFixed(2)}</div><div class="sub">out of 10</div></div>
       <div class="stat-card"><div class="label">Mason's Avg Score</div><div class="value">${s.avgMason.toFixed(2)}</div><div class="sub">out of 10</div></div>
       <div class="stat-card"><div class="label">Will ↔ Mason Agreement</div><div class="value">${s.willMasonCorr!==null ? s.willMasonCorr.toFixed(2) : '—'}</div><div class="sub">correlation, -1 to 1</div></div>
+      <div class="stat-card"><div class="label">Will's Spread</div><div class="value">${s.willStdDev.toFixed(2)}</div><div class="sub">std. deviation — higher = swings more between love/hate</div></div>
+      <div class="stat-card"><div class="label">Mason's Spread</div><div class="value">${s.masonStdDev.toFixed(2)}</div><div class="sub">std. deviation — higher = swings more between love/hate</div></div>
+      <div class="stat-card"><div class="label">Owned Avg Score</div><div class="value">${s.avgOwnedScore.toFixed(2)}</div><div class="sub">vs ${s.avgNotOwnedScore.toFixed(2)} for albums not owned</div></div>
+      <div class="stat-card"><div class="label">Who Rates Higher</div><div class="value">${s.willHigherCount} / ${s.masonHigherCount}</div><div class="sub">Will higher / Mason higher (${s.tiedCount} tied)</div></div>
     </div>
 
     <div class="chart-card">
@@ -1027,10 +1070,17 @@ function renderStatsView(){
       </div>
     </div>
 
-    <div class="chart-card">
-      <h3>Taste by Decade</h3>
-      <div class="desc">Average score given, grouped by the decade each album came out. Will (blue) vs. Mason (red).</div>
-      <div class="chart-canvas-wrap" id="chartDecade"></div>
+    <div class="charts-two-col">
+      <div class="chart-card">
+        <h3>Score Distribution</h3>
+        <div class="desc">How many albums fall into each score range, Will (blue) vs. Mason (red).</div>
+        <div class="chart-canvas-wrap" id="chartScoreDist"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Taste by Decade</h3>
+        <div class="desc">Average score given, grouped by the decade each album came out. Will (blue) vs. Mason (red).</div>
+        <div class="chart-canvas-wrap" id="chartDecade"></div>
+      </div>
     </div>
 
     <div class="chart-card">
@@ -1039,24 +1089,81 @@ function renderStatsView(){
       <div class="chart-canvas-wrap" style="height:140px;" id="chartRsAgreement"></div>
     </div>
 
-    <div class="chart-card">
-      <h3>Biggest Disagreements</h3>
-      <div class="desc">The albums Will and Mason are furthest apart on.</div>
-      <div class="disagree-list">
-        ${s.disagreements.map(a => `
-          <div class="disagree-item">
-            <div class="rank">#${a.rsRank}</div>
-            <div class="names">
-              <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
-              <div class="album">${escapeHtml(titleCase(a.album))}</div>
+    <div class="charts-two-col">
+      <div class="chart-card">
+        <h3>Will's Top 10</h3>
+        <div class="desc">Will's highest-scored albums.</div>
+        <div class="disagree-list">
+          ${s.topWill.map(a => `
+            <div class="disagree-item">
+              <div class="rank">#${a.rsRank}</div>
+              <div class="names">
+                <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
+                <div class="album">${escapeHtml(titleCase(a.album))}</div>
+              </div>
+              <div class="scores"><span>W <b>${fmtScore(a.will.score)}</b></span></div>
             </div>
-            <div class="scores">
-              <span>W <b>${fmtScore(a.will.score)}</b></span>
-              <span>M <b>${fmtScore(a.mason.score)}</b></span>
-              <span class="gap">Δ ${a.diff.toFixed(2)}</span>
+          `).join('')}
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Mason's Top 10</h3>
+        <div class="desc">Mason's highest-scored albums.</div>
+        <div class="disagree-list">
+          ${s.topMason.map(a => `
+            <div class="disagree-item">
+              <div class="rank">#${a.rsRank}</div>
+              <div class="names">
+                <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
+                <div class="album">${escapeHtml(titleCase(a.album))}</div>
+              </div>
+              <div class="scores"><span>M <b>${fmtScore(a.mason.score)}</b></span></div>
             </div>
-          </div>
-        `).join('')}
+          `).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="charts-two-col">
+      <div class="chart-card">
+        <h3>Biggest Disagreements</h3>
+        <div class="desc">The albums Will and Mason are furthest apart on.</div>
+        <div class="disagree-list">
+          ${s.disagreements.map(a => `
+            <div class="disagree-item">
+              <div class="rank">#${a.rsRank}</div>
+              <div class="names">
+                <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
+                <div class="album">${escapeHtml(titleCase(a.album))}</div>
+              </div>
+              <div class="scores">
+                <span>W <b>${fmtScore(a.will.score)}</b></span>
+                <span>M <b>${fmtScore(a.mason.score)}</b></span>
+                <span class="gap">Δ ${a.diff.toFixed(2)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Most Agreed On</h3>
+        <div class="desc">The albums Will and Mason are closest to seeing eye-to-eye on.</div>
+        <div class="disagree-list">
+          ${s.agreements.map(a => `
+            <div class="disagree-item">
+              <div class="rank">#${a.rsRank}</div>
+              <div class="names">
+                <div class="artist">${escapeHtml(titleCase(a.artist))}</div>
+                <div class="album">${escapeHtml(titleCase(a.album))}</div>
+              </div>
+              <div class="scores">
+                <span>W <b>${fmtScore(a.will.score)}</b></span>
+                <span>M <b>${fmtScore(a.mason.score)}</b></span>
+                <span class="gap">Δ ${a.diff.toFixed(2)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
       </div>
     </div>
   `;
@@ -1081,6 +1188,16 @@ function renderStatsView(){
       {name:'Mason', color:'#d69d9d', values: s.genresSorted.map(g => s.genreAgg[g].masonN ? s.genreAgg[g].masonSum/s.genreAgg[g].masonN : 0)},
     ],
     max: 10, height: 300
+  }));
+
+  // Score distribution
+  mountChart('chartScoreDist', barChart({
+    labels: s.buckets.map(b => `${b}-${b+1}`),
+    series: [
+      {name:'Will', color:'#9db4d6', values: s.willDist},
+      {name:'Mason', color:'#d69d9d', values: s.masonDist},
+    ],
+    height: 300
   }));
 
   // Taste by decade
